@@ -230,11 +230,19 @@ function perguntasEsperadasFolha(dados) {
   return Array.from({ length: 80 }, (_, i) => ({ pergunta: i + 1 }));
 }
 
+function textoRespostaFolha(item) {
+  if (!item) return "Não marcada";
+  if (item.estado === "multipla_marcacao") return "Múltipla marcação";
+  return item.resposta || "Não marcada";
+}
+
 function ResultadoFolha({ dados }) {
+  const lista = dados.respostas || [];
   const respostasPorPergunta = new Map(
-    (dados.respostas || []).map((r) => [Number(r.pergunta), r])
+    lista.map((r) => [Number(r.pergunta), r])
   );
   const perguntas = perguntasEsperadasFolha(dados);
+  const marcadas = dados.respostas_marcadas || lista.filter((r) => r.estado === "marcada");
 
   return (
     <div className="resultado-box resultado-folha">
@@ -251,30 +259,40 @@ function ResultadoFolha({ dados }) {
           </p>
         )}
         <p>
-          <strong>Nome:</strong>{" "}
-          {dados.nome ? dados.nome : <em className="vazio">(não preenchido)</em>}
+          <strong>Nome:</strong> {dados.nome || <em className="vazio">Não identificado</em>}
         </p>
         <p>
           <strong>Código:</strong>{" "}
-          {dados.codigo ? dados.codigo : <em className="vazio">(não detectado)</em>}
+          {dados.codigo ? dados.codigo : <em className="vazio">Não identificado</em>}
+        </p>
+        <p>
+          <strong>Marcações únicas:</strong> {marcadas.length} / {dados.total_questoes || lista.length || 80}
         </p>
       </div>
-      <h4>Respostas marcadas</h4>
+      <h4>Todas as questões (1–80)</h4>
       {perguntas.length > 0 ? (
         <ul className="lista-respostas">
           {perguntas.map((p) => {
-            const resposta = respostasPorPergunta.get(Number(p.pergunta));
+            const item = respostasPorPergunta.get(Number(p.pergunta));
+            const texto = textoRespostaFolha(item);
+            const naoMarcada = !item || item.estado === "nao_marcada";
+            const multipla = item?.estado === "multipla_marcacao";
             return (
-            <li key={p.pergunta} className={!resposta ? "resposta-nao-marcada" : ""}>
+            <li
+              key={p.pergunta}
+              className={
+                naoMarcada ? "resposta-nao-marcada" : multipla ? "resposta-multipla" : ""
+              }
+            >
               Pergunta {p.pergunta}
-              {(resposta?.disciplina || p.disciplina) ? ` (Disc. ${resposta?.disciplina || p.disciplina})` : ""}:{" "}
-              {resposta ? <strong>{resposta.resposta}</strong> : <em>Nenhuma opção marcada</em>}
+              {(item?.disciplina || p.disciplina) ? ` (Disc. ${item?.disciplina || p.disciplina})` : ""}:{" "}
+              <strong>{texto}</strong>
             </li>
             );
           })}
         </ul>
       ) : (
-        <p className="sem-resultado">Nenhuma alternativa marcada detectada.</p>
+        <p className="sem-resultado">Nenhuma questão analisada.</p>
       )}
       {dados.ficheiro_json && (
         <p className="docx-info">

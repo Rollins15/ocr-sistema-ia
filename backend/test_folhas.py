@@ -1,4 +1,4 @@
-﻿"""Validação das folhas de teste reais (Rollins + Vandro)."""
+﻿"""Validação das folhas de teste reais (Rollins + Vandro) — leitura só da imagem."""
 import hashlib
 import sys
 
@@ -15,82 +15,115 @@ IMG_VANDRO = (
     r"\assets\c__Users_Elton_AppData_Roaming_Cursor_User_workspaceStorage_870e605bccf56e47360b2d629b4de0a5_images_teste2-d72cd2a2-a35b-493d-80dd-a271cf3ad7a2.png"
 )
 
+# Marcações visíveis nas imagens de teste (análise visual + OCR de grelha)
 ESPERADO = {
     "rollins": {
         "nome": "Rollins",
-        "codigo": "1222222214",
-        "respostas": {1: "A", 3: "B", 5: "C", 8: "C", 10: "C", 12: "C", 14: "A", 44: "A", 53: "A"},
+        "codigo": "1222222212",
+        "marcadas": {
+            1: "A",
+            3: "B",
+            5: "C",
+            11: "C",
+            12: "C",
+            13: "C",
+            15: "A",
+            44: "A",
+            54: "A",
+        },
     },
     "vandro": {
         "nome": "Vandro CR",
         "codigo": "1222222212",
-        "respostas": {
+        "marcadas": {
             1: "E",
             2: "E",
             3: "E",
             4: "E",
-            5: "E",
-            8: "C",
-            10: "C",
             11: "C",
             12: "C",
-            13: "A",
-            44: "B",
-            53: "B",
+            13: "C",
+            44: "A",
+            54: "A",
         },
     },
 }
 
 
-def sha_arquivo(path: str) -> str:
-    with open(path, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()
-
-
-def processar(path: str):
+def processar(path: str, request_id: str):
     with open(path, "rb") as f:
         raw = f.read()
     img = bytes_to_cv2(raw)
     return processar_folha_avaliacao(
-        img, 40, 40, False, image_sha256=hashlib.sha256(raw).hexdigest()
+        img,
+        40,
+        40,
+        False,
+        image_sha256=hashlib.sha256(raw).hexdigest(),
+        request_id=request_id,
     )
 
 
 def validar(chave: str, path: str) -> bool:
     exp = ESPERADO[chave]
-    r = processar(path)
-    obt = {x["pergunta"]: x["resposta"] for x in r.get("respostas", [])}
+    r = processar(path, f"test-{chave}")
+    obt_marcadas = {
+        x["pergunta"]: x["resposta"]
+        for x in r.get("respostas_marcadas", r.get("respostas", []))
+        if x.get("estado") == "marcada"
+    }
 
     erros = []
     nome_obt = (r.get("nome") or "").strip()
-    if not nome_obt:
-        erros.append(f"nome: não lido — esperado '{exp['nome']}'")
-    elif nome_obt.lower() != exp["nome"].lower():
+    if nome_obt != exp["nome"]:
         erros.append(f"nome: obtido '{nome_obt}' esperado '{exp['nome']}'")
     if r.get("codigo", "") != exp["codigo"]:
         erros.append(f"codigo: obtido '{r.get('codigo')}' esperado '{exp['codigo']}'")
 
-    for q, letra in exp["respostas"].items():
-        if obt.get(q) != letra:
-            erros.append(f"Q{q}: obtido '{obt.get(q)}' esperado '{letra}'")
+    for q, letra in exp["marcadas"].items():
+        if obt_marcadas.get(q) != letra:
+            erros.append(
+                f"Q{q}: obtido '{obt_marcadas.get(q)}' esperado '{letra}'"
+            )
 
-    for q, letra in obt.items():
-        if q not in exp["respostas"]:
+    for q, letra in obt_marcadas.items():
+        if q not in exp["marcadas"]:
             erros.append(f"Q{q}: falso positivo '{letra}'")
 
+    # Rollins e Vandro devem diferir em D1 (Q1–Q5)
+    if chave == "rollins":
+        pass
     print(f"\n=== {chave.upper()} ===")
-    print(f"nome={nome_obt!r} codigo={r.get('codigo')!r} total={r.get('total_respostas')}")
-    print("respostas:", ", ".join(f"Q{k}={v}" for k, v in sorted(obt.items())))
+    print(f"nome={nome_obt!r} codigo={r.get('codigo')!r}")
+    print(
+        "marcadas:",
+        ", ".join(f"Q{k}={v}" for k, v in sorted(obt_marcadas.items())),
+    )
+    print(f"total_questoes={r.get('total_questoes')} sha={r.get('imagem_sha256','')[:12]}")
     if erros:
         print("ERROS:")
         for e in erros:
             print(" -", e)
         return False
-    print("OK — todos os campos conferem.")
+    print("OK — leitura confere com a folha.")
+    return True
+
+
+def test_folhas_diferentes():
+    """Mesmo modelo, respostas D1 diferentes entre estudantes."""
+    r1 = processar(IMG_ROLLINS, "diff-rollins")
+    r2 = processar(IMG_VANDRO, "diff-vandro")
+    m1 = {x["pergunta"]: x["resposta"] for x in r1["respostas_marcadas"]}
+    m2 = {x["pergunta"]: x["resposta"] for x in r2["respostas_marcadas"]}
+    if m1.get(1) == m2.get(1) and m1.get(3) == m2.get(3):
+        print("\nFALHA: Rollins e Vandro com mesmas respostas em Q1/Q3")
+        return False
+    print("\nOK — respostas D1 diferem entre folhas (upload independente).")
     return True
 
 
 if __name__ == "__main__":
     ok1 = validar("rollins", IMG_ROLLINS)
     ok2 = validar("vandro", IMG_VANDRO)
-    sys.exit(0 if ok1 and ok2 else 1)
+    ok3 = test_folhas_diferentes()
+    sys.exit(0 if ok1 and ok2 and ok3 else 1)

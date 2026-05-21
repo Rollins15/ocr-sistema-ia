@@ -1,10 +1,13 @@
 /**
- * URL do backend OCR no PC.
+ * URL do backend OCR.
  *
- * Telemóvel físico (Expo Go, mesma Wi-Fi):
- *   1. No PC: ipconfig → IPv4 (ex.: 192.168.0.15)
- *   2. Coloca abaixo: http://SEU_IP:8000
+ * Crie mobile-app/.env com:
+ *   EXPO_PUBLIC_API_URL=http://SEU_IP:8000
  *
- * Emulador Android no PC: http://10.0.2.2:8000
+ * Referências:
+ * - Emulador Android: http://10.0.2.2:8000
+ * - Expo Web / iOS Simulator: http://localhost:8000
+ * - Telemóvel físico (Expo Go): http://IP_DO_PC:8000 (ipconfig → IPv4)
  */
-export const BASE_URL = "http://10.228.60.7:8000";
+export const BASE_URL =
+  process.env.EXPO_PUBLIC_API_URL || "http://localhost:8000";

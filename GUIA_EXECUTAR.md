@@ -82,3 +82,35 @@ C:\Program Files\Tesseract-OCR\tesseract.exe
 ```
 
 Se o OCR não funcionar, confirme se o Tesseract está instalado e se o idioma português está disponível.
+
+## 5. App mobile (Expo) — paridade com a web
+
+A pasta `mobile-app` tem os **3 modos**: Texto Geral, Quiz e Folha de Avaliação (igual ao `web-frontend2`).
+
+```powershell
+cd mobile-app
+npm install
+```
+
+Configure o IP do backend (telemóvel físico na mesma Wi-Fi):
+
+```text
+mobile-app/.env
+EXPO_PUBLIC_API_URL=http://SEU_IP_DO_PC:8000
+```
+
+Referências de URL:
+
+| Dispositivo | URL típica |
+|-------------|------------|
+| Expo Web / iOS Simulator | `http://localhost:8000` |
+| Emulador Android | `http://10.0.2.2:8000` |
+| Telemóvel (Expo Go) | `http://192.168.x.x:8000` |
+
+Iniciar:
+
+```powershell
+npx expo start
+```
+
+O ecrã mostra se o backend está ligado e permite câmara, galeria, copiar texto e ver as 80 linhas da folha OMR.
