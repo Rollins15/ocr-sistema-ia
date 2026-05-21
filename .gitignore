@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# Backend — resultados gerados pelo OCR
+backend/resultados/*.docx
+backend/resultados/*.json
+backend/test_*.png
+backend/cal*.py
+backend/tmp_*.png
+
+# Node
+node_modules/
+/build
+.expo/
+dist/
+web-build/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Logs
+npm-debug.log*
+*.log
