@@ -4,7 +4,7 @@
 // Executar:  npm start
 
 import { useState, useRef, useEffect } from "react";
-import { extrairTexto, extrairQuiz, extrairFolha } from "./services/ocrApi";
+import { extrairTexto, extrairQuiz, extrairDisciplinas } from "./services/ocrApi";
 import "./App.css";
 
 // ─── Modal: captura pela câmara do PC ─────────────────────────────────────────
@@ -217,73 +217,38 @@ function ResultadoTexto({ dados }) {
   );
 }
 
-// ─── Resultado: folha de avaliação ───────────────────────────────────────────
-function perguntasEsperadasFolha(dados) {
-  if (dados.tipo_folha === "omr") {
-    return [
-      ...Array.from({ length: 40 }, (_, i) => i + 1)
-        .map((pergunta) => ({ pergunta, disciplina: 1 })),
-      ...Array.from({ length: 40 }, (_, i) => i + 41)
-        .map((pergunta) => ({ pergunta, disciplina: 2 })),
-    ];
-  }
-  return Array.from({ length: 80 }, (_, i) => ({ pergunta: i + 1 }));
-}
-
-function ResultadoFolha({ dados }) {
-  const respostasPorPergunta = new Map(
-    (dados.respostas || []).map((r) => [Number(r.pergunta), r])
-  );
-  const perguntas = perguntasEsperadasFolha(dados);
+// ─── Resultado: EXAME INTEGRADO (disciplinas marcadas) ───────────────────────
+function ResultadoDisciplinas({ dados }) {
+  const lista = dados.disciplinas || [];
 
   return (
     <div className="resultado-box resultado-folha">
-      <h3>Folha processada</h3>
-      {dados.tipo_folha && (
-        <span className="badge tipo-folha">
-          {dados.tipo_folha === "omr" ? "Folha OMR (UCM)" : "Folha simples"}
-        </span>
-      )}
-      <div className="folha-campos">
-        {dados.request_id && (
-          <p>
-            <strong>Request ID:</strong> <code>{dados.request_id}</code>
-          </p>
-        )}
-        <p>
-          <strong>Nome:</strong>{" "}
-          {dados.nome ? dados.nome : <em className="vazio">(não preenchido)</em>}
-        </p>
-        <p>
-          <strong>Código:</strong>{" "}
-          {dados.codigo ? dados.codigo : <em className="vazio">(não detectado)</em>}
-        </p>
-      </div>
-      <h4>Respostas marcadas</h4>
-      {perguntas.length > 0 ? (
-        <ul className="lista-respostas">
-          {perguntas.map((p) => {
-            const resposta = respostasPorPergunta.get(Number(p.pergunta));
-            return (
-            <li key={p.pergunta} className={!resposta ? "resposta-nao-marcada" : ""}>
-              Pergunta {p.pergunta}
-              {(resposta?.disciplina || p.disciplina) ? ` (Disc. ${resposta?.disciplina || p.disciplina})` : ""}:{" "}
-              {resposta ? <strong>{resposta.resposta}</strong> : <em>Nenhuma opção marcada</em>}
+      <h3>EXAME INTEGRADO</h3>
+      <span className="badge tipo-folha">Disciplinas marcadas</span>
+      <h4>Disciplinas seleccionadas</h4>
+      {lista.length > 0 ? (
+        <ul className="lista-respostas lista-disciplinas">
+          {lista.map((nome, i) => (
+            <li key={`${nome}-${i}`}>
+              <strong>{nome}</strong>
             </li>
-            );
-          })}
+          ))}
         </ul>
       ) : (
-        <p className="sem-resultado">Nenhuma alternativa marcada detectada.</p>
+        <p className="sem-resultado">
+          Nenhuma disciplina marcada detectada na secção EXAME INTEGRADO.
+        </p>
+      )}
+      {dados.avisos?.length > 0 && (
+        <div className="avisos-folha">
+          {dados.avisos.map((a, i) => (
+            <p key={i} className="aviso-linha">{a}</p>
+          ))}
+        </div>
       )}
       {dados.ficheiro_json && (
         <p className="docx-info">
           JSON guardado: <code>{dados.ficheiro_json}</code>
-        </p>
-      )}
-      {dados.imagem_sha256 && (
-        <p className="docx-info">
-          Hash da imagem: <code>{dados.imagem_sha256.slice(0, 16)}...</code>
         </p>
       )}
     </div>
@@ -323,7 +288,7 @@ export default function App() {
       if (modo === "quiz") {
         dados = await extrairQuiz(imagem);
       } else if (modo === "folha") {
-        dados = await extrairFolha(imagem);
+        dados = await extrairDisciplinas(imagem);
       } else {
         dados = await extrairTexto(imagem);
       }
@@ -363,7 +328,7 @@ export default function App() {
             className={`tab ${modo === "folha" ? "activo" : ""}`}
             onClick={() => { setModo("folha"); setResultado(null); }}
           >
-            Folha de Avaliação
+            EXAME INTEGRADO
           </button>
         </div>
 
@@ -373,7 +338,7 @@ export default function App() {
             <h2>
               {modo === "texto" && "Carregar imagem com texto"}
               {modo === "quiz" && "Carregar imagem com perguntas"}
-              {modo === "folha" && "Carregar folha de avaliação"}
+              {modo === "folha" && "Carregar folha — secção EXAME INTEGRADO"}
             </h2>
             <p className="descricao">
               {modo === "texto" &&
@@ -381,7 +346,7 @@ export default function App() {
               {modo === "quiz" &&
                 "Carrega ou fotografa uma imagem com perguntas numeradas e opções A, B, C, D."}
               {modo === "folha" &&
-                "Folha com nome, código e quadrados A/B/C/D pintados (ex.: prova de informática)."}
+                "Detecta apenas as disciplinas marcadas (quadrados à direita de cada linha). Não lê nome, código nem respostas A–E."}
             </p>
 
             <SelecionarImagem
@@ -397,7 +362,7 @@ export default function App() {
               {carregando
                 ? "A processar..."
                 : modo === "folha"
-                  ? "Processar folha"
+                  ? "Detectar disciplinas"
                   : "Extrair Texto"}
             </button>
 
@@ -453,7 +418,7 @@ export default function App() {
             )}
 
             {resultado && modo === "folha" && (
-              <ResultadoFolha dados={resultado} />
+              <ResultadoDisciplinas dados={resultado} />
             )}
           </div>
         </div>

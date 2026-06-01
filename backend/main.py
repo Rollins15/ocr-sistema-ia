@@ -8,6 +8,7 @@
 #   POST /ocr/image   → recebe imagem, extrai texto geral, retorna JSON
 #   POST /ocr/quiz    → recebe imagem, extrai perguntas A/B/C/D, retorna JSON
 #   POST /ocr/folha   → folha de avaliação (nome, código, respostas marcadas)
+#   POST /ocr/disciplinas → EXAME INTEGRADO: disciplinas marcadas
 #   GET  /health      → verificar se o servidor está a funcionar
 #
 # INSTALAR:
@@ -222,9 +223,45 @@ ROI_NOME = (0.30, 0.195, 0.35, 0.058)
 ROI_CODIGO_BOLHAS = (0.04, 0.482, 0.29, 0.135)  # grelha 10×10 (bolhas)
 ROI_CODIGO_CAIXAS = (0.048, 0.308, 0.288, 0.045)  # 10 caixas com dígitos escritos
 ROI_CODIGO = ROI_CODIGO_BOLHAS  # compatibilidade
-ROI_DISC1 = (0.39, 0.305, 0.24, 0.62)       # coluna "Disciplina - 1"
-ROI_DISC2 = (0.665, 0.305, 0.24, 0.62)      # coluna "Disciplina - 2"
+ROI_DISC1 = (0.39, 0.305, 0.24, 0.62)       # coluna "Disciplina - 1" (grelha respostas)
+ROI_DISC2 = (0.665, 0.305, 0.24, 0.62)      # coluna "Disciplina - 2" (grelha respostas)
 TAMANHO_OMR = (1000, 1414)                  # (largura, altura) canónica
+
+# EXAME INTEGRADO — selecção de disciplinas (folha oficial UCM, ver FOLHA_AZUL)
+# Scan/PDF em retrato: tabela abaixo do código do candidato (~y 0,70–0,89)
+ROI_EXAME_SCAN_INTEGRADO = (0.02, 0.68, 0.34, 0.22)
+ROI_EXAME_SCAN_DISCIPLINA_1 = (0.02, 0.695, 0.165, 0.195)
+ROI_EXAME_SCAN_DISCIPLINA_2 = (0.17, 0.695, 0.165, 0.195)
+OMR_EXAME_CHK_X0_SCAN = 0.78
+# Foto em paisagem (rotação 90°): secção sobe na imagem normalizada
+ROI_EXAME_FOTO_INTEGRADO = (0.02, 0.50, 0.40, 0.42)
+ROI_EXAME_FOTO_DISCIPLINA_1 = (0.03, 0.52, 0.19, 0.38)
+ROI_EXAME_FOTO_DISCIPLINA_2 = (0.22, 0.52, 0.19, 0.38)
+OMR_EXAME_CHK_X0_FOTO = 0.55
+LIMIAR_DISCIPLINA_PADRAO = 18.0
+OMR_EXAME_CHK_RW_REL = 0.38
+DISCIPLINAS_DISCIPLINA_1 = [
+    "Matemática III",
+    "Matemática II",
+    "Matemática III",
+    "Português I",
+    "Biologia II",
+    "Matemática I",
+    "Português III",
+    "Biologia I",
+    "Matemática II",
+]
+DISCIPLINAS_DISCIPLINA_2 = [
+    "Geografia II",
+    "Desenho",
+    "Química II",
+    "História",
+    "Física II",
+    "Física I",
+    "Geografia I",
+    "Química I",
+    "Português II",
+]
 LIMIAR_PIXEL_ESCURO = 170
 
 # Dentro do ROI de cada disciplina: zona horizontal onde estão só os 5 rectângulos
@@ -634,6 +671,196 @@ def checkboxes_da_linha(cinza, linha_boxes):
         caixa = max(cluster, key=lambda b: percentagem_preenchimento(cinza, b))
         caixas.append(caixa)
     return sorted(caixas, key=lambda b: b["cx"])
+
+
+def _config_exame_integrado(
+    prep_meta: Dict[str, Any],
+) -> Tuple[
+    Tuple[float, float, float, float],
+    Tuple[float, float, float, float],
+    float,
+    Tuple[float, float, float, float],
+    str,
+]:
+    """Escolhe ROIs conforme folha digital (retrato) ou foto (paisagem rotada)."""
+    if prep_meta.get("rotacao_90"):
+        return (
+            ROI_EXAME_FOTO_DISCIPLINA_1,
+            ROI_EXAME_FOTO_DISCIPLINA_2,
+            OMR_EXAME_CHK_X0_FOTO,
+            ROI_EXAME_FOTO_INTEGRADO,
+            "foto",
+        )
+    return (
+        ROI_EXAME_SCAN_DISCIPLINA_1,
+        ROI_EXAME_SCAN_DISCIPLINA_2,
+        OMR_EXAME_CHK_X0_SCAN,
+        ROI_EXAME_SCAN_INTEGRADO,
+        "scan",
+    )
+
+
+def _area_exame_integrado_presente(
+    imagem_bgr: np.ndarray,
+    roi_integrado: Tuple[float, float, float, float],
+) -> bool:
+    """Confirma presença da secção EXAME INTEGRADO (OCR no rodapé esquerdo)."""
+    x1, y1, x2, y2 = _roi_pixels(imagem_bgr, *roi_integrado)
+    texto = ocr_regiao(imagem_bgr, x1, y1, x2 - x1, y2 - y1, psm=6).upper()
+    return "INTEGRADO" in texto or "EXAME" in texto
+
+
+def _mapear_quadrados_a_linhas(
+    quadrados: List[Dict[str, Any]], n_linhas: int, altura_patch: int
+) -> List[List[Dict[str, Any]]]:
+    """Associa cada quadrado detectado à linha 0..n_linhas-1 pela coordenada Y."""
+    if not quadrados or n_linhas < 1:
+        return [[] for _ in range(max(0, n_linhas))]
+    esperados = [(i + 0.5) * altura_patch / float(n_linhas) for i in range(n_linhas)]
+    por_linha: List[List[Dict[str, Any]]] = [[] for _ in range(n_linhas)]
+    for q in quadrados:
+        j = min(range(n_linhas), key=lambda i: abs(q["cy"] - esperados[i]))
+        por_linha[j].append(q)
+    return por_linha
+
+
+def _score_checkbox_exame(
+    cinza: np.ndarray,
+    roi: Tuple[float, float, float, float],
+    linha: int,
+    n_linhas: int,
+    chk_x0_rel: float,
+) -> float:
+    """Score de tinta no quadrado à direita da linha (0 = vazio, ~30+ = marcado)."""
+    rx, ry, rw, rh = roi
+    ch = rh / float(max(1, n_linhas))
+    x_chk = rx + rw * chk_x0_rel
+    rw_chk = rw * OMR_EXAME_CHK_RW_REL
+    return score_tinta_celula_cinza(cinza, x_chk, ry + linha * ch, rw_chk, ch)
+
+
+def _detectar_disciplinas_coluna_grelha(
+    cinza: np.ndarray,
+    roi: Tuple[float, float, float, float],
+    nomes: List[str],
+    limiar: float,
+    chk_x0_rel: float,
+) -> List[str]:
+    """
+    Divide a coluna em N linhas; mede tinta no quadrado à direita.
+    Só devolve marcas com pico claro (lápis) face ao ruído da impressão.
+    """
+    n = len(nomes)
+    if n == 0:
+        return []
+    scores = [_score_checkbox_exame(cinza, roi, i, n, chk_x0_rel) for i in range(n)]
+    s = np.array(scores, dtype=np.float64)
+    s_max = float(s.max())
+    med = float(np.median(s))
+    if s_max < limiar:
+        return []
+    # Caixas vazias impressas elevam várias linhas; marca a lápis destaca uma linha.
+    if s_max - med < 20.0:
+        return []
+    thr = max(limiar, s_max * 0.90)
+    marcadas = [nomes[i] for i in range(n) if float(s[i]) >= thr]
+    if len(marcadas) > 2:
+        i_best = int(np.argmax(s))
+        if float(s[i_best]) >= limiar:
+            return [nomes[i_best]]
+        return []
+    return marcadas
+
+
+def _detectar_disciplinas_coluna_exame(
+    cinza: np.ndarray,
+    roi: Tuple[float, float, float, float],
+    nomes: List[str],
+    limiar: float,
+    chk_x0_rel: float,
+    usar_apenas_grelha: bool = False,
+) -> List[str]:
+    """
+    Lê checkboxes da coluna EXAME INTEGRADO com findContours + boundingRect.
+    Se poucos contornos forem encontrados, usa grelha fixa (9 linhas).
+    """
+    if usar_apenas_grelha:
+        return _detectar_disciplinas_coluna_grelha(cinza, roi, nomes, limiar, chk_x0_rel)
+
+    x1, y1, x2, y2 = _roi_pixels(cinza, *roi)
+    patch = cinza[y1:y2, x1:x2]
+    ph, pw = patch.shape[:2]
+    n = len(nomes)
+    if ph < 10 or pw < 10 or n == 0:
+        return []
+
+    area_max = min(8000, max(200, int(ph * pw * 0.06)))
+    quadrados = detetar_quadrados(patch, area_min=35, area_max=area_max)
+    quadrados_cb = [q for q in quadrados if q["cx"] >= pw * 0.45]
+
+    if len(quadrados_cb) < max(3, n // 3):
+        return _detectar_disciplinas_coluna_grelha(cinza, roi, nomes, limiar, chk_x0_rel)
+
+    por_linha = _mapear_quadrados_a_linhas(quadrados_cb, n, ph)
+    marcadas: List[str] = []
+    for i, nome in enumerate(nomes):
+        candidatos = por_linha[i]
+        if not candidatos:
+            continue
+        caixa = max(candidatos, key=lambda b: (b["cx"], percentagem_preenchimento(patch, b)))
+        pct = percentagem_preenchimento(patch, caixa)
+        if pct >= max(limiar, 25.0):
+            marcadas.append(nome)
+
+    if not marcadas and len(quadrados_cb) >= 1:
+        return _detectar_disciplinas_coluna_grelha(cinza, roi, nomes, limiar, chk_x0_rel)
+    return marcadas
+
+
+def detectar_disciplinas(
+    imagem: np.ndarray,
+    limiar_preenchimento: Optional[float] = None,
+) -> Dict[str, Any]:
+    """
+    Detecta disciplinas marcadas na secção EXAME INTEGRADO da folha UCM.
+
+    1. Alinha a folha (perspectiva + tamanho canónico).
+    2. Localiza as duas colunas de disciplinas (rótulos fixos por linha).
+    3. Mede preenchimento dos quadrados (contornos ou grelha).
+    """
+    limiar = float(
+        limiar_preenchimento if limiar_preenchimento is not None else LIMIAR_DISCIPLINA_PADRAO
+    )
+    img_prep, prep_meta = preparar_imagem_folha_avaliacao(imagem)
+    cinza = cv2.cvtColor(img_prep, cv2.COLOR_BGR2GRAY)
+
+    roi_d1, roi_d2, chk_x0, roi_integrado, modo_roi = _config_exame_integrado(prep_meta)
+    secao_ok = _area_exame_integrado_presente(img_prep, roi_integrado)
+    # Folha digital: contornos das caixas vazias confundem com marcação; usar só grelha.
+    apenas_grelha = modo_roi == "scan"
+    disciplinas: List[str] = []
+    disciplinas.extend(
+        _detectar_disciplinas_coluna_exame(
+            cinza, roi_d1, DISCIPLINAS_DISCIPLINA_1, limiar, chk_x0, apenas_grelha
+        )
+    )
+    disciplinas.extend(
+        _detectar_disciplinas_coluna_exame(
+            cinza, roi_d2, DISCIPLINAS_DISCIPLINA_2, limiar, chk_x0, apenas_grelha
+        )
+    )
+
+    resultado: Dict[str, Any] = {
+        "disciplinas": disciplinas,
+        "modo_roi_exame": modo_roi,
+    }
+    resultado["preparacao_imagem"] = prep_meta
+    resultado["exame_integrado_detectado"] = secao_ok
+    if not secao_ok:
+        resultado.setdefault("avisos", []).append(
+            "Texto 'EXAME INTEGRADO' não confirmado por OCR; ROIs fixas foram usadas."
+        )
+    return resultado
 
 
 def resposta_marcada_na_linha(cinza, linha_boxes):
@@ -1818,3 +2045,45 @@ async def ocr_folha(
             "X-Request-Id": request_id,
         },
     )
+
+
+@app.post("/ocr/disciplinas")
+async def ocr_disciplinas(
+    file: UploadFile = File(...),
+    limiar_preenchimento: float = Form(LIMIAR_DISCIPLINA_PADRAO),
+    guardar_json: bool = Form(False),
+):
+    """
+    EXAME INTEGRADO: devolve apenas as disciplinas marcadas (sem nome, código nem respostas).
+
+    Form-data opcional:
+    - limiar_preenchimento: score mínimo de tinta no quadrado (padrão 18; marcas fortes ~30+).
+    - guardar_json: grava cópia em resultados/.
+    """
+    if file.content_type and not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Ficheiro deve ser uma imagem")
+
+    conteudo = await file.read()
+    imagem = bytes_to_cv2(conteudo)
+    if imagem is None:
+        raise HTTPException(status_code=400, detail="Não foi possível processar a imagem")
+
+    limiar = max(5.0, min(95.0, float(limiar_preenchimento)))
+    dados = detectar_disciplinas(imagem, limiar_preenchimento=limiar)
+
+    resultado: Dict[str, Any] = {
+        "sucesso": True,
+        "disciplinas": dados.get("disciplinas", []),
+        "preparacao_imagem": dados.get("preparacao_imagem", {}),
+        "exame_integrado_detectado": dados.get("exame_integrado_detectado", False),
+        "parametros": {"limiar_preenchimento": limiar},
+    }
+    if dados.get("avisos"):
+        resultado["avisos"] = dados["avisos"]
+    if guardar_json:
+        resultado["ficheiro_json"] = guardar_json(
+            {**resultado, "nome_ficheiro": file.filename},
+            prefixo="disciplinas",
+        )
+
+    return JSONResponse(resultado)
