@@ -339,6 +339,11 @@ details pre { background: #f9fafb; padding: 10px; border-radius: 6px; font-size:
   margin-bottom: 8px;
   font-size: 14px;
 }
+.lista-respostas li.resposta-multipla {
+  background: #fef3c7;
+  border-color: #fcd34d;
+}
+
 .lista-respostas li.resposta-nao-marcada {
   background: #ffffff;
   color: #9ca3af;

@@ -18,7 +18,7 @@ export default function App() {
         <Stack.Screen
           name="Home"
           component={HomeScreen}
-          options={{ title: "OCR · Leitura de Texto" }}
+          options={{ title: "OCR · UCM (Texto / Quiz / Folha)" }}
         />
       </Stack.Navigator>
     </NavigationContainer>

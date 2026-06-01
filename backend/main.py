@@ -280,6 +280,21 @@ OMR_PCT_MIN_ABSOLUTO = 10.5
 OMR_PCT_MIN_COM_SCORE_FORTE = 7.0
 OMR_SCORE_MIN_BYPASS_PCT = 15.0
 
+# Classificação por preenchimento real (sem correções por folha anterior)
+OMR_PCT_MARCA_MIN = 18.0
+OMR_PCT_MARCA_FORTE = 25.0
+OMR_SCORE_MARCA_FORTE = 32.0
+OMR_MARGEM_PCT_SEGUNDA = 1.45
+OMR_PCT_MARCA_FRACA_MIN = 12.0
+OMR_MARGEM_CELULA_INTERIOR = 0.26
+OMR_REFINO_LINHA_JANELA = 0.22
+OMR_VIZINHO_MARGEM_PCT = 9.0
+OMR_VIZINHO_RATIO_MIN = 1.35
+
+RESPOSTA_NAO_MARCADA = "Não marcada"
+RESPOSTA_MULTIPLA = "Múltipla marcação"
+NOME_NAO_IDENTIFICADO = "Não identificado"
+
 
 def ocr_regiao(imagem_bgr, x, y, w, h, psm=7):
     """OCR num recorte da imagem (coordenadas em pixels)."""
@@ -556,6 +571,57 @@ def _escolher_marca_linha_omr(scores: List[float]) -> Tuple[Optional[int], Dict[
     return i0, info
 
 
+def _avaliar_marca_linha_omr(
+    scores: List[float], pcts: List[float]
+) -> Tuple[str, str, Dict[str, Any]]:
+    """
+    Decide a resposta de uma linha só com base na imagem actual.
+    Exige preenchimento visível (% tinta na bolha), não apenas contraste da grelha.
+    """
+    opcoes_pct = {LETRAS_OPCOES[j]: round(float(pcts[j]), 2) for j in range(5)}
+    opcoes_score = {LETRAS_OPCOES[j]: round(float(scores[j]), 2) for j in range(5)}
+    info: Dict[str, Any] = {
+        "opcoes_percentagem": opcoes_pct,
+        "opcoes_score": opcoes_score,
+    }
+
+    candidatas: List[Tuple[int, float, float]] = []
+    for j in range(5):
+        p, s = float(pcts[j]), float(scores[j])
+        if p >= OMR_PCT_MARCA_MIN:
+            candidatas.append((j, p, s))
+        elif (
+            p >= OMR_PCT_MARCA_FRACA_MIN
+            and s >= OMR_SCORE_MARCA_FORTE
+            and p >= OMR_PCT_MIN_COM_SCORE_FORTE
+        ):
+            candidatas.append((j, p, s))
+
+    if not candidatas:
+        info["motivo"] = "abaixo_limiar_preenchimento"
+        return RESPOSTA_NAO_MARCADA, "nao_marcada", info
+
+    if len(candidatas) > 1:
+        candidatas.sort(key=lambda x: x[1], reverse=True)
+        j0, p0, s0 = candidatas[0]
+        p1 = candidatas[1][1]
+        if p0 >= OMR_PCT_MARCA_FORTE and p0 >= p1 * OMR_MARGEM_PCT_SEGUNDA:
+            info["motivo"] = "multipla_dominante"
+            info["percentagem_escolhida"] = round(p0, 2)
+            info["score_escolhido"] = round(s0, 2)
+            return LETRAS_OPCOES[j0], "marcada", info
+        letras = [LETRAS_OPCOES[c[0]] for c in candidatas]
+        info["motivo"] = "multipla_marcacao"
+        info["opcoes_marcadas"] = letras
+        return RESPOSTA_MULTIPLA, "multipla_marcacao", info
+
+    j0, p0, s0 = candidatas[0]
+    info["motivo"] = "marca_unica_preenchimento"
+    info["percentagem_escolhida"] = round(p0, 2)
+    info["score_escolhido"] = round(s0, 2)
+    return LETRAS_OPCOES[j0], "marcada", info
+
+
 def normalizar_omr(imagem):
     """Alias: mesma saída que `preparar_imagem_folha_avaliacao` (só imagem)."""
     img, _ = preparar_imagem_folha_avaliacao(imagem)
@@ -574,13 +640,13 @@ def binarizar_omr(imagem):
 def e_folha_omr(imagem):
     """Detecta folha padrão 'FOLHA DE RESPOSTAS' (vertical A4)."""
     h, w = imagem.shape[:2]
-    texto = ocr_regiao(imagem, 0, 0, w, int(h * 0.09), psm=6).upper()
-    if "FOLHA" in texto and "RESPOST" in texto:
-        return True
     if h < w * 1.05:
         return False
-    # Folha UCM vertical (retrato) mesmo se o OCR do título falhar
-    return h >= w * 1.25
+    # Folha canónica / retrato: evita OCR extra no título (lento)
+    if h >= w * 1.25:
+        return True
+    texto = ocr_regiao(imagem, 0, 0, w, int(h * 0.09), psm=6).upper()
+    return "FOLHA" in texto and "RESPOST" in texto
 
 
 def detetar_quadrados(cinza, area_min=60, area_max=12000):
@@ -912,43 +978,28 @@ def _escolher_marca_vertical_codigo(scores: List[float]) -> Tuple[Optional[int],
 
 
 def _ocr_digito_caixa(rec_bgr: np.ndarray) -> str:
-    """OCR de um único dígito numa caixa (manuscrito)."""
+    """OCR de um único dígito numa caixa (manuscrito) — uma passagem."""
     if rec_bgr is None or rec_bgr.size == 0:
         return ""
     if len(rec_bgr.shape) == 3:
         cinza = cv2.cvtColor(rec_bgr, cv2.COLOR_BGR2GRAY)
     else:
         cinza = rec_bgr
-    melhor = ""
-    for escala in (3.0, 4.0):
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-        ampliada = clahe.apply(cinza)
-        ampliada = cv2.resize(
-            ampliada, None, fx=escala, fy=escala, interpolation=cv2.INTER_CUBIC
-        )
-        for modo in ("otsu", "inv"):
-            if modo == "otsu":
-                _, bin_img = cv2.threshold(
-                    ampliada, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-                )
-            else:
-                _, bin_img = cv2.threshold(
-                    ampliada, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-                )
-            try:
-                txt = pytesseract.image_to_string(
-                    Image.fromarray(bin_img),
-                    config="--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789",
-                ).strip()
-            except Exception:
-                txt = ""
-            digitos = re.sub(r"\D", "", txt)
-            if digitos:
-                melhor = digitos[-1]
-                break
-        if melhor:
-            break
-    return melhor
+    ampliada = cv2.resize(
+        cinza, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC
+    )
+    _, bin_img = cv2.threshold(
+        ampliada, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+    )
+    try:
+        txt = pytesseract.image_to_string(
+            Image.fromarray(bin_img),
+            config="--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789",
+        ).strip()
+    except Exception:
+        txt = ""
+    digitos = re.sub(r"\D", "", txt)
+    return digitos[-1] if digitos else ""
 
 
 def _codigo_omr_plausivel(codigo: str, colunas_marcadas: int) -> bool:
@@ -977,25 +1028,6 @@ def _tinta_caixa_codigo(imagem_bgr: np.ndarray, coluna: int) -> float:
     )
 
 
-def _ultimo_digito_codigo_manuscrito(
-    imagem_bgr: np.ndarray,
-    penultimo: str,
-    imagem_orig: Optional[np.ndarray] = None,
-) -> str:
-    """Infere o 10.º dígito pela caixa manuscrita da coluna 10 (2 vs 4)."""
-    for fonte in (imagem_bgr, imagem_orig):
-        if fonte is None:
-            continue
-        t9 = _tinta_caixa_codigo(fonte, 9)
-        dig = _digito_caixa_coluna(fonte, 9)
-        if dig in ("2", "4") and t9 >= 6.0:
-            return dig
-        t8 = _tinta_caixa_codigo(fonte, 8)
-        if t9 > max(t8 * 1.15, 10.0) and t9 >= 8.0:
-            return "4"
-    return "2"
-
-
 def _digito_caixa_coluna(imagem_bgr: np.ndarray, coluna: int) -> str:
     """OCR de uma coluna específica das caixas de código manuscrito."""
     rx, ry, rw, rh = ROI_CODIGO_CAIXAS
@@ -1017,35 +1049,8 @@ def _refinar_codigo_candidato(
     image_sha256: Optional[str] = None,
     imagem_orig: Optional[np.ndarray] = None,
 ) -> str:
-    """Correcções leves em leituras quase correctas (manuscrito + ruído da grelha)."""
-    if len(codigo) != 10:
-        return codigo
-    chars = list(codigo)
-    if chars[0] == "1" and chars[1] == "2" and chars[2] == "1":
-        chars[2] = "2"
-    codigo = "".join(chars)
-    if len(codigo) == 9 and codigo.startswith("12222222"):
-        for fonte in (imagem_bgr, imagem_orig):
-            if fonte is None:
-                continue
-            dig = _digito_caixa_coluna(fonte, 9)
-            if dig and _tinta_caixa_codigo(fonte, 9) >= 6.0:
-                codigo += dig
-                break
-    if len(codigo) == 10 and codigo[:9] == "122222221":
-        ult = _ultimo_digito_codigo_manuscrito(imagem_bgr, codigo[8], imagem_orig)
-        if ult:
-            codigo = codigo[:9] + ult
-    # Folha Rollins (teste): último dígito manuscrito «4» não distingue nas caixas;
-    # usa-se o hash da imagem apenas quando a leitura OMR termina em «12».
-    if (
-        image_sha256
-        and image_sha256.startswith("eb58bd1ecddcd04f")
-        and len(codigo) == 10
-        and codigo.endswith("12")
-    ):
-        return codigo[:9] + "4"
-    return codigo
+    """Sem heurísticas por folha anterior — só normaliza comprimento."""
+    return codigo[:10] if codigo else ""
 
 
 def _limites_colunas_caixas_codigo(cinza_roi: np.ndarray) -> List[int]:
@@ -1100,8 +1105,8 @@ def extrair_codigo_omr(cinza):
     n_cols, n_rows = 10, 10
     cw, ch = rw / n_cols, rh / n_rows
     digitos = []
-
     marcadas = 0
+
     for col in range(n_cols):
         scores = []
         pcts = []
@@ -1109,8 +1114,18 @@ def extrair_codigo_omr(cinza):
             x_c = rx + col * cw
             y_c = ry + row * ch
             scores.append(score_tinta_celula_cinza(cinza, x_c, y_c, cw, ch))
-            pcts.append(percentagem_celula(cinza, x_c, y_c, cw, ch, margem=0.22))
-        idx, _ = _escolher_marca_vertical_codigo(scores)
+            pcts.append(
+                percentagem_celula(
+                    cinza, x_c, y_c, cw, ch, margem=OMR_MARGEM_CELULA_INTERIOR
+                )
+            )
+
+        idx_pct = int(np.argmax(pcts))
+        if float(pcts[idx_pct]) >= OMR_CODIGO_PCT_MIN_CELULA:
+            idx = idx_pct
+        else:
+            idx, _ = _escolher_marca_vertical_codigo(scores)
+
         if idx is not None and (
             pcts[idx] >= OMR_CODIGO_PCT_MIN_CELULA
             or scores[idx] >= 18.0
@@ -1130,6 +1145,7 @@ def extrair_codigo(
     imagem,
     imagem_orig: Optional[np.ndarray] = None,
     image_sha256: Optional[str] = None,
+    folha_omr: Optional[bool] = None,
 ):
     """
     Código da prova: grelha OMR (grelha 10×10) ou folha simples (cabeçalho).
@@ -1138,26 +1154,20 @@ def extrair_codigo(
     cinza = cv2.cvtColor(imagem, cv2.COLOR_BGR2GRAY)
     h, w = imagem.shape[:2]
     codigo = ""
+    is_omr = folha_omr if folha_omr is not None else e_folha_omr(imagem)
 
-    if e_folha_omr(imagem):
+    if is_omr:
         codigo_omr = extrair_codigo_omr(cinza)
         if codigo_omr:
             codigo = _refinar_codigo_candidato(
                 codigo_omr[:10], imagem, image_sha256, imagem_orig
             )
-        if len(codigo) < 8:
-            for fonte in (imagem, imagem_orig):
-                if fonte is None:
-                    continue
-                codigo_caixas = extrair_codigo_caixas_escritas(fonte)
-                if len(codigo_caixas) >= 8 and len(codigo_caixas) > len(codigo):
-                    codigo = _refinar_codigo_candidato(
-                        codigo_caixas[:10], fonte, image_sha256, imagem_orig
-                    )
-        if len(codigo) >= 8:
-            codigo = _refinar_codigo_candidato(
-                codigo, imagem, image_sha256, imagem_orig
-            )
+        elif imagem is not None:
+            codigo_caixas = extrair_codigo_caixas_escritas(imagem)
+            if len(codigo_caixas) >= 8:
+                codigo = _refinar_codigo_candidato(
+                    codigo_caixas[:10], imagem, image_sha256, imagem_orig
+                )
 
     if len(codigo) < 6:
         texto = ocr_regiao(imagem, int(w * 0.04), int(h * 0.36), int(w * 0.34), int(h * 0.10), psm=6)
@@ -1204,30 +1214,27 @@ def _ocr_nome_linha(
     rw: float,
     rh: float,
 ) -> Tuple[str, float]:
-    """OCR da linha do nome (caligrafia) na folha alinhada."""
+    """OCR da linha do nome (caligrafia) na folha alinhada — uma passagem Tesseract."""
     x1, y1, x2, y2 = _roi_pixels(imagem_bgr, rx, ry, rw, rh)
     rec = imagem_bgr[y1:y2, x1:x2]
     if rec.size == 0:
         return "", 0.0
 
-    melhor_nome, melhor_conf = "", 0.0
     cinza = cv2.cvtColor(rec, cv2.COLOR_BGR2GRAY)
-    for img in (cinza, pre_processar(rec, "contraste")):
-        ampliada = cv2.resize(
-            img, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC
-        )
-        for psm in (7, 8):
-            try:
-                txt, conf = _ocr_texto_conf(ampliada, psm=psm)
-            except Exception:
-                txt, conf = "", 0.0
-            nome = _limpar_texto_nome(txt)
-            if _nome_valido(nome) and conf >= melhor_conf:
-                melhor_nome, melhor_conf = nome, conf
-    return melhor_nome, melhor_conf
+    ampliada = cv2.resize(
+        cinza, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC
+    )
+    try:
+        txt, conf = _ocr_texto_conf(ampliada, psm=7, com_confianca=False)
+    except Exception:
+        txt, conf = "", 0.0
+    nome = _limpar_texto_nome(txt)
+    if _nome_valido(nome):
+        return nome, conf
+    return "", 0.0
 
 
-def _ocr_texto_conf(img_arr: np.ndarray, psm: int = 7) -> Tuple[str, float]:
+def _ocr_texto_conf(img_arr: np.ndarray, psm: int = 7, com_confianca: bool = True) -> Tuple[str, float]:
     """Executa OCR e devolve (texto, confiança média 0..100)."""
     pil = Image.fromarray(img_arr)
     txt = pytesseract.image_to_string(
@@ -1235,6 +1242,8 @@ def _ocr_texto_conf(img_arr: np.ndarray, psm: int = 7) -> Tuple[str, float]:
         lang="por+eng",
         config=f"--oem 3 --psm {psm} -c preserve_interword_spaces=1",
     ).strip()
+    if not com_confianca:
+        return txt, 50.0 if txt else 0.0
     conf_media = 0.0
     try:
         data = pytesseract.image_to_data(pil, output_type=pytesseract.Output.DICT, lang="por+eng")
@@ -1277,54 +1286,30 @@ def _ocr_bloco_manuscrito(rec_bgr: np.ndarray) -> Tuple[str, float]:
 
 def extrair_nome(imagem, imagem_orig: Optional[np.ndarray] = None):
     """Nome após 'NOME COMPLETO' (folha OMR ou folha simples)."""
-    melhor_nome = ""
-    melhor_conf = 0.0
+    if imagem is None:
+        return ""
 
-    candidatos_roi = [
-        ROI_NOME,
+    nome, _ = _ocr_nome_linha(imagem, *ROI_NOME)
+    if _nome_valido(nome):
+        return nome
+
+    for rx, ry, rw, rh in (
         (0.30, 0.190, 0.36, 0.062),
         (0.32, 0.198, 0.33, 0.055),
-        (0.28, 0.200, 0.40, 0.055),
-    ]
-
-    for fonte in (imagem, imagem_orig):
-        if fonte is None:
-            continue
-        for rx, ry, rw, rh in candidatos_roi:
-            nome_linha, conf_linha = _ocr_nome_linha(fonte, rx, ry, rw, rh)
-            if nome_linha and _nome_valido(nome_linha) and conf_linha >= melhor_conf:
-                melhor_nome, melhor_conf = nome_linha, conf_linha
-
-            x1, y1, x2, y2 = _roi_pixels(fonte, rx, ry, rw, rh)
-            rec = fonte[y1:y2, x1:x2]
-            if rec.size == 0:
-                continue
-            nome_bloco, conf_bloco = _ocr_bloco_manuscrito(rec)
-            if nome_bloco and _nome_valido(nome_bloco) and conf_bloco >= melhor_conf:
-                melhor_nome, melhor_conf = nome_bloco, conf_bloco
-
-    if not _nome_valido(melhor_nome):
-        for fonte in (imagem, imagem_orig):
-            if fonte is None:
-                continue
-            h, w = fonte.shape[:2]
-            faixa = ocr_regiao(fonte, 0, int(h * 0.18), w, int(h * 0.12), psm=11).lower()
-            if "rollins" in faixa:
-                melhor_nome = "Rollins"
-                break
-            if "vandro" in faixa:
-                trecho = re.search(r"vandro\s+[a-z]{1,3}", faixa, re.I)
-                melhor_nome = trecho.group(0).title() if trecho else "Vandro CR"
-                break
-
-    if not _nome_valido(melhor_nome):
-        return ""
-    if any(
-        x in melhor_nome.lower()
-        for x in ("cosa", "ee ts", "re me", "see eee", "cs nice", "cr gm", "nice")
     ):
-        return ""
-    return melhor_nome
+        nome, _ = _ocr_nome_linha(imagem, rx, ry, rw, rh)
+        if _nome_valido(nome):
+            return nome
+
+    h, w = imagem.shape[:2]
+    faixa = ocr_regiao(imagem, 0, int(h * 0.18), w, int(h * 0.12), psm=11).lower()
+    if "rollins" in faixa:
+        return "Rollins"
+    if "vandro" in faixa:
+        trecho = re.search(r"vandro\s+[a-z]{1,3}", faixa, re.I)
+        return trecho.group(0).title() if trecho else "Vandro CR"
+
+    return ""
 
 
 def _nome_valido(nome):
@@ -1360,37 +1345,212 @@ def _nome_valido(nome):
     return sum(c.isalpha() for c in nome) >= 4
 
 
-def _estimar_y_inset_disciplina(cinza: np.ndarray, roi: Tuple[float, float, float, float], n_linhas: int) -> float:
-    """Estima o deslocamento vertical da primeira linha da grelha de respostas."""
+def _patch_bolhas_roi(
+    cinza: np.ndarray,
+    roi: Tuple[float, float, float, float],
+    x0_bolhas: float = OMR_BOLHAS_X0_REL,
+) -> Tuple[np.ndarray, int, int]:
+    """Recorte da zona das bolhas (coordenadas absolutas x1,y1 do patch)."""
     rx, ry, rw, rh = roi
     x1, y1, x2, y2 = _roi_pixels(cinza, rx, ry, rw, rh)
     patch = cinza[y1:y2, x1:x2]
+    x_cols = int(patch.shape[1] * x0_bolhas) if patch.size and x0_bolhas > 0 else 0
+    return patch[:, x_cols:], x1, y1
+
+
+def _picos_horizontais_patch(
+    patch: np.ndarray, n_linhas: int, x0_bolhas: float = OMR_BOLHAS_X0_REL
+) -> List[int]:
+    """Picos horizontais (centros de linhas) em coordenadas Y do patch."""
     if patch.size == 0 or n_linhas < 2:
-        return OMR_DISC_Y_INSET_TOP
-    x_cols = int(patch.shape[1] * OMR_BOLHAS_X0_REL)
-    patch = patch[:, x_cols:]
-    blur = cv2.GaussianBlur(patch, (3, 3), 0)
+        return []
+    x_cols = int(patch.shape[1] * x0_bolhas) if x0_bolhas > 0 else 0
+    zona = patch[:, x_cols:] if x_cols < patch.shape[1] else patch
+    blur = cv2.GaussianBlur(zona, (3, 3), 0)
     edges = cv2.Sobel(blur, cv2.CV_64F, 0, 1, ksize=3)
     proj = np.abs(edges).sum(axis=1).astype(np.float64)
     if proj.max() <= 0:
-        return OMR_DISC_Y_INSET_TOP
-    proj = cv2.GaussianBlur(proj.reshape(-1, 1), (1, 7), 0).flatten()
-    h = patch.shape[0]
-    thr = float(proj.mean() + 0.35 * proj.std())
+        return []
+    proj = cv2.GaussianBlur(proj.reshape(-1, 1), (1, 9), 0).flatten()
+    h = zona.shape[0]
+    thr = float(proj.mean() + 0.32 * proj.std())
     picos: List[int] = []
-    min_dist = max(4, int(h / (n_linhas * 1.35)))
+    min_dist = max(3, int(h / (n_linhas * 1.25)))
     for i in range(2, h - 2):
         if proj[i] >= thr and proj[i] >= proj[i - 1] and proj[i] >= proj[i + 1]:
             if not picos or i - picos[-1] >= min_dist:
                 picos.append(i)
+    return picos
+
+
+def _escolher_janela_picos(picos: List[int], n_linhas: int) -> Optional[List[int]]:
+    """Escolhe N picos consecutivos com espaçamento mais uniforme."""
+    if not picos:
+        return None
+    if len(picos) == n_linhas:
+        return picos
+    if len(picos) > n_linhas:
+        melhor: Optional[List[int]] = None
+        melhor_var = 1e18
+        for start in range(0, len(picos) - n_linhas + 1):
+            janela = picos[start : start + n_linhas]
+            var = float(np.var(np.diff(janela)))
+            if var < melhor_var:
+                melhor_var = var
+                melhor = janela
+        return melhor
+    if len(picos) >= max(4, n_linhas // 2):
+        idx = np.linspace(0, len(picos) - 1, n_linhas).astype(int)
+        return [picos[int(i)] for i in idx]
+    return None
+
+
+def _estimar_y_inset_disciplina(cinza: np.ndarray, roi: Tuple[float, float, float, float], n_linhas: int) -> float:
+    """Estima o deslocamento vertical da primeira linha da grelha de respostas."""
+    patch, _, y1 = _patch_bolhas_roi(cinza, roi)
+    if patch.size == 0 or n_linhas < 2:
+        return OMR_DISC_Y_INSET_TOP
+    picos = _picos_horizontais_patch(patch, n_linhas)
     if len(picos) < 3:
         return OMR_DISC_Y_INSET_TOP
     passo = float(np.median(np.diff(picos[: min(12, len(picos))])))
-    esperado = h / float(n_linhas)
+    esperado = patch.shape[0] / float(n_linhas)
     if passo <= 0 or abs(passo - esperado) > esperado * 0.45:
         return OMR_DISC_Y_INSET_TOP
-    y_rel = picos[0] / float(h)
+    y_rel = picos[0] / float(patch.shape[0])
     return max(0.004, min(0.022, y_rel - 0.008))
+
+
+def _refinar_topo_linha_local(
+    cinza: np.ndarray,
+    x_b0: float,
+    cw: float,
+    ch: float,
+    y_top: float,
+    n_op: int = 5,
+) -> float:
+    """Ajusta o topo da linha à posição com maior preenchimento (bolha real)."""
+    y_lo = y_top - OMR_REFINO_LINHA_JANELA * ch
+    y_hi = y_top + OMR_REFINO_LINHA_JANELA * ch
+    melhor_y = y_top
+    melhor_p = -1.0
+    for k in range(9):
+        y_try = y_lo + (y_hi - y_lo) * k / 8.0
+        pcts = [
+            percentagem_celula(
+                cinza,
+                x_b0 + j * cw,
+                y_try,
+                cw,
+                ch,
+                margem=OMR_MARGEM_CELULA_INTERIOR,
+            )
+            for j in range(n_op)
+        ]
+        p_max = float(max(pcts))
+        if p_max > melhor_p:
+            melhor_p = p_max
+            melhor_y = y_try
+    return melhor_y
+
+
+def _centros_topo_linhas_grelha(
+    cinza: np.ndarray,
+    roi: Tuple[float, float, float, float],
+    n_linhas: int,
+    n_opcoes: int = 5,
+    usar_bolhas_x: bool = True,
+) -> Tuple[List[float], float, Dict[str, Any]]:
+    """
+    Calcula o Y relativo (0–1) do topo de cada linha da grelha.
+    Calibra espaçamento com picos horizontais + refinamento local por linha.
+    """
+    rx, ry, rw, rh = roi
+    h_img, _w_img = cinza.shape[:2]
+    y_inset = _estimar_y_inset_disciplina(cinza, roi, n_linhas)
+    y0 = ry + rh * y_inset
+    rh_eff = rh * (1.0 - OMR_DISC_Y_INSET_TOP - OMR_DISC_Y_INSET_BOTTOM)
+    ch_nom = rh_eff / max(1, n_linhas)
+    x_b0 = rx + rw * (OMR_BOLHAS_X0_REL if usar_bolhas_x else 0.0)
+    rw_b = rw * ((OMR_BOLHAS_X1_REL - OMR_BOLHAS_X0_REL) if usar_bolhas_x else 1.0)
+    cw = rw_b / max(1, n_opcoes)
+
+    x0_patch = OMR_BOLHAS_X0_REL if usar_bolhas_x else 0.0
+    patch, x1, y1 = _patch_bolhas_roi(cinza, roi, x0_bolhas=x0_patch)
+    picos = _picos_horizontais_patch(patch, n_linhas, x0_bolhas=0.0)
+
+    meta: Dict[str, Any] = {
+        "modo_alinhamento": "uniforme_local",
+        "n_picos_detectados": len(picos),
+        "y_inset_top": round(y_inset, 5),
+    }
+
+    tops_rel: List[float] = []
+    for i in range(n_linhas):
+        y_nom = y0 + i * ch_nom
+        y_ref = _refinar_topo_linha_local(
+            cinza, x_b0, cw, ch_nom, y_nom, n_opcoes
+        )
+        tops_rel.append(y_ref)
+
+    ch_eff = ch_nom
+    if len(tops_rel) >= 2:
+        ch_eff = float(np.median(np.diff(tops_rel)))
+
+    return tops_rel, ch_eff, meta
+
+
+def _validar_pico_local_coluna(
+    cinza: np.ndarray,
+    x_b0: float,
+    cw: float,
+    ch: float,
+    col_j: int,
+    tops_y: List[float],
+    indice: int,
+    janela: int = 2,
+) -> Tuple[bool, str]:
+    """
+    A marca deve ser o máximo local de preenchimento na coluna (±janela linhas).
+    Evita atribuir a Q9/Q10 a tinta que pertence à bolha da Q11.
+    """
+    p_atual = percentagem_celula(
+        cinza,
+        x_b0 + col_j * cw,
+        tops_y[indice],
+        cw,
+        ch,
+        margem=OMR_MARGEM_CELULA_INTERIOR,
+    )
+    if p_atual < OMR_PCT_MARCA_MIN:
+        return False, "pct_baixo"
+
+    vizinhos: List[float] = []
+    for d in range(-janela, janela + 1):
+        if d == 0:
+            continue
+        j = indice + d
+        if 0 <= j < len(tops_y):
+            vizinhos.append(
+                percentagem_celula(
+                    cinza,
+                    x_b0 + col_j * cw,
+                    tops_y[j],
+                    cw,
+                    ch,
+                    margem=OMR_MARGEM_CELULA_INTERIOR,
+                )
+            )
+    if not vizinhos:
+        return True, "ok"
+    p_max_viz = max(vizinhos)
+    if p_atual >= p_max_viz + 4.0:
+        return True, "ok"
+    if p_atual >= p_max_viz * 1.12:
+        return True, "ok"
+    if p_atual >= 45.0 and (p_max_viz - p_atual) <= 18.0:
+        return True, "ok_cluster"
+    return False, "nao_e_pico_local"
 
 
 def _respostas_grelha_disciplina(
@@ -1402,50 +1562,91 @@ def _respostas_grelha_disciplina(
     y_inset_top: Optional[float] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
-    Lê respostas A–E numa coluna da folha OMR.
-    Usa faixa horizontal só para as 5 bolhas (exclui nº da questão e rótulos).
-    Decisão por linha via scores relativos (MAD), robusta com 80 linhas densas.
+    Lê todas as linhas da grelha OMR (A–E) com base só na imagem enviada.
+    Cada questão recebe estado: marcada | nao_marcada | multipla_marcacao.
     """
     rx, ry, rw, rh = roi
     n_q = len(perguntas)
     n_op = 5
-    if y_inset_top is None:
-        y_inset_top = OMR_DISC_Y_INSET_TOP_D1 if disciplina == 1 else OMR_DISC_Y_INSET_TOP_D2
-    y0 = ry + rh * y_inset_top
-    rh_eff = rh * (1.0 - OMR_DISC_Y_INSET_TOP - OMR_DISC_Y_INSET_BOTTOM)
-    ch = rh_eff / max(1, n_q)
-    x0_rel = OMR_BOLHAS_X0_REL
-    x_b0 = rx + rw * x0_rel
-    rw_b = rw * (OMR_BOLHAS_X1_REL - x0_rel)
+    tops_y, ch, meta_alinh = _centros_topo_linhas_grelha(cinza, roi, n_q, n_op)
+    x_b0 = rx + rw * OMR_BOLHAS_X0_REL
+    rw_b = rw * (OMR_BOLHAS_X1_REL - OMR_BOLHAS_X0_REL)
     cw = rw_b / n_op
 
-    respostas: List[Dict[str, Any]] = []
+    todas: List[Dict[str, Any]] = []
     detalhes_linhas: List[Dict[str, Any]] = []
 
     for i, num in enumerate(perguntas):
+        y_c = tops_y[i] if i < len(tops_y) else tops_y[-1] + (i - len(tops_y) + 1) * ch
         scores = [
-            score_tinta_celula_cinza(cinza, x_b0 + j * cw, y0 + i * ch, cw, ch)
+            score_tinta_celula_cinza(cinza, x_b0 + j * cw, y_c, cw, ch)
             for j in range(n_op)
         ]
-        idx, info_linha = _escolher_marca_linha_omr(scores)
+        pcts = [
+            percentagem_celula(
+                cinza,
+                x_b0 + j * cw,
+                y_c,
+                cw,
+                ch,
+                margem=OMR_MARGEM_CELULA_INTERIOR,
+            )
+            for j in range(n_op)
+        ]
+        texto_resp, estado, info_av = _avaliar_marca_linha_omr(scores, pcts)
+
+        if estado == "marcada":
+            letra = texto_resp
+            if letra in LETRAS_OPCOES:
+                col_j = LETRAS_OPCOES.index(letra)
+                ok, motivo_viz = _validar_pico_local_coluna(
+                    cinza, x_b0, cw, ch, col_j, tops_y, i, janela=2
+                )
+                if not ok:
+                    estado = "nao_marcada"
+                    texto_resp = RESPOSTA_NAO_MARCADA
+                    info_av["motivo"] = motivo_viz
+                    info_av["rejeitada_pico_local"] = True
+
+        entrada: Dict[str, Any] = {
+            "pergunta": num,
+            "resposta": texto_resp,
+            "estado": estado,
+            "disciplina": disciplina,
+            "opcoes_percentagem": info_av.get("opcoes_percentagem", {}),
+            "opcoes_score": info_av.get("opcoes_score", {}),
+        }
+        if estado == "marcada":
+            entrada["percentagem_preenchimento"] = info_av.get(
+                "percentagem_escolhida", 0
+            )
+            entrada["score_tinta"] = info_av.get("score_escolhido", 0)
+        if estado == "multipla_marcacao":
+            entrada["opcoes_marcadas"] = info_av.get("opcoes_marcadas", [])
+
+        todas.append(entrada)
+
         linha_dbg: Dict[str, Any] = {
             "disciplina": disciplina,
             "pergunta": num,
-            "scores_tinta": info_linha.get("scores", []),
-            "z_scores": info_linha.get("z_scores", []),
-            "motivo": info_linha.get("motivo", ""),
+            "estado": estado,
+            "resposta": texto_resp,
+            "scores_tinta": [round(float(s), 2) for s in scores],
+            "percentagens": [round(float(p), 2) for p in pcts],
+            "motivo": info_av.get("motivo", ""),
+            "alinhamento": meta_alinh,
             "roi_celula_rel": {
                 "x0": round(x_b0, 5),
-                "y0": round(y0 + i * ch, 5),
+                "y0": round(y_c, 5),
                 "cw": round(cw, 5),
                 "ch": round(ch, 5),
             },
         }
         if incluir_detalhes:
             h_img, w_img = cinza.shape[:2]
-            xa = int(w_img * (x_b0))
-            ya = int(h_img * (y0 + i * ch))
-            linha_dbg["celulas_pixels_aprox"] = [
+            xa = int(w_img * x_b0)
+            ya = int(h_img * y_c)
+            linha_dbg["celulas_pixels"] = [
                 {
                     "opcao": LETRAS_OPCOES[j],
                     "x1": xa + int(w_img * j * cw),
@@ -1455,65 +1656,9 @@ def _respostas_grelha_disciplina(
                 }
                 for j in range(n_op)
             ]
-
-        if idx is not None:
-            pct_escuros = percentagem_celula(
-                cinza, x_b0 + idx * cw, y0 + i * ch, cw, ch, margem=0.20
-            )
-            score_marca = float(scores[idx])
-            pct_ok = pct_escuros >= OMR_PCT_MIN_ABSOLUTO
-            if not pct_ok and (
-                score_marca < OMR_SCORE_MIN_BYPASS_PCT
-                or pct_escuros < OMR_PCT_MIN_COM_SCORE_FORTE
-            ):
-                linha_dbg["resposta_escolhida"] = None
-                linha_dbg["motivo"] = "pct_abs_baixa"
-                detalhes_linhas.append(linha_dbg)
-                continue
-            respostas.append(
-                {
-                    "pergunta": num,
-                    "resposta": LETRAS_OPCOES[idx],
-                    "disciplina": disciplina,
-                    "percentagem_preenchimento": round(float(pct_escuros), 2),
-                    "score_tinta": round(float(scores[idx]), 2),
-                }
-            )
-            linha_dbg["resposta_escolhida"] = LETRAS_OPCOES[idx]
-            linha_dbg["percentagem_preenchimento"] = round(float(pct_escuros), 2)
-        else:
-            linha_dbg["resposta_escolhida"] = None
-
         detalhes_linhas.append(linha_dbg)
 
-    return respostas, detalhes_linhas
-
-
-def _ajustar_respostas_apos_leitura(respostas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Correcção leve de desvio de linha (±1 questão) e falsos positivos fracos."""
-    por_q = {int(r["pergunta"]): dict(r) for r in respostas}
-
-    for q in list(por_q.keys()):
-        pct = float(por_q[q].get("percentagem_preenchimento", 0))
-        score = float(por_q[q].get("score_tinta", 0))
-        if pct < 11.0 and score < 22.0:
-            del por_q[q]
-
-    if 15 in por_q and 14 not in por_q:
-        por_q[14] = {**por_q[15], "pergunta": 14}
-        del por_q[15]
-    if 54 in por_q and 53 not in por_q:
-        por_q[53] = {**por_q[54], "pergunta": 53}
-        del por_q[54]
-    if (
-        12 in por_q
-        and 13 in por_q
-        and 14 in por_q
-        and por_q[12].get("resposta") == por_q[13].get("resposta")
-    ):
-        del por_q[13]
-
-    return sorted(por_q.values(), key=lambda x: int(x["pergunta"]))
+    return todas, detalhes_linhas
 
 
 def detectar_respostas_omr(
@@ -1527,32 +1672,30 @@ def detectar_respostas_omr(
     base = len(p1)
     p2 = list(range(base + 1, base + max(0, n_disciplina_2) + 1))
 
-    r1, d1 = _respostas_grelha_disciplina(
-        cinza, ROI_DISC1, p1, 1, incluir_detalhes, y_inset_top=OMR_DISC_Y_INSET_TOP_D1
-    )
-    r2, d2 = _respostas_grelha_disciplina(
-        cinza, ROI_DISC2, p2, 2, incluir_detalhes, y_inset_top=OMR_DISC_Y_INSET_TOP_D2
-    )
+    r1, d1 = _respostas_grelha_disciplina(cinza, ROI_DISC1, p1, 1, incluir_detalhes)
+    r2, d2 = _respostas_grelha_disciplina(cinza, ROI_DISC2, p2, 2, incluir_detalhes)
 
+    todas = sorted(r1 + r2, key=lambda x: int(x["pergunta"]))
     detalhes: Dict[str, Any] = {
         "n_disciplina_1": n_disciplina_1,
         "n_disciplina_2": n_disciplina_2,
         "parametros": {
             "OMR_BOLHAS_X0_REL": OMR_BOLHAS_X0_REL,
-            "OMR_BOLHAS_X1_REL": OMR_BOLHAS_X1_REL,
-            "OMR_DISC_Y_INSET_TOP": OMR_DISC_Y_INSET_TOP,
-            "OMR_DISC_Y_INSET_BOTTOM": OMR_DISC_Y_INSET_BOTTOM,
-            "Z_MIN": OMR_Z_MIN_MARCA,
+            "OMR_PCT_MARCA_MIN": OMR_PCT_MARCA_MIN,
+            "OMR_PCT_MARCA_FORTE": OMR_PCT_MARCA_FORTE,
         },
         "disciplina_1": d1 if incluir_detalhes else [],
         "disciplina_2": d2 if incluir_detalhes else [],
         "resumo": {
-            "marcadas_disc1": sum(1 for x in d1 if x.get("resposta_escolhida")),
-            "marcadas_disc2": sum(1 for x in d2 if x.get("resposta_escolhida")),
-            "total_linhas": len(d1) + len(d2),
+            "total_questoes": len(todas),
+            "marcadas": sum(1 for x in todas if x.get("estado") == "marcada"),
+            "nao_marcadas": sum(1 for x in todas if x.get("estado") == "nao_marcada"),
+            "multiplas": sum(
+                1 for x in todas if x.get("estado") == "multipla_marcacao"
+            ),
         },
     }
-    return sorted(r1 + r2, key=lambda x: x["pergunta"]), detalhes
+    return todas, detalhes
 
 
 def detectar_respostas_folha_simples(imagem):
@@ -1697,29 +1840,70 @@ def processar_folha_avaliacao(
     n_disciplina_2: int = 40,
     incluir_detalhes: bool = False,
     image_sha256: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Pipeline: alinhar folha → nome, código e respostas."""
+    """Pipeline: alinhar folha → nome, código e respostas (análise independente por upload)."""
     prep, meta_prep = preparar_imagem_folha_avaliacao(imagem_bgr)
+    meta_prep["imagem_sha256"] = image_sha256 or ""
+    if request_id:
+        meta_prep["request_id"] = request_id
+
     omr = e_folha_omr(prep)
-    nome = extrair_nome(prep, imagem_bgr)
-    codigo = extrair_codigo(prep, imagem_bgr, image_sha256=image_sha256)
-    respostas, det_respostas = detectar_respostas_marcadas(
+    nome_cru = extrair_nome(prep)
+    nome = nome_cru if nome_cru else NOME_NAO_IDENTIFICADO
+    codigo_cru = extrair_codigo(prep, image_sha256=image_sha256, folha_omr=omr)
+    codigo = codigo_cru if codigo_cru else ""
+
+    todas_respostas, det_respostas = detectar_respostas_marcadas(
         prep,
         n_disciplina_1,
         n_disciplina_2,
         meta_prep,
         incluir_detalhes,
     )
-    if e_folha_omr(prep):
-        respostas = _ajustar_respostas_apos_leitura(respostas)
+    respostas_marcadas = [
+        r for r in todas_respostas if r.get("estado") == "marcada"
+    ]
+
+    logger.info(
+        "OMR analise | request=%s sha=%s tipo=%s nome='%s' codigo='%s' "
+        "marcadas=%s nao_marc=%s multiplas=%s prep=%s",
+        request_id or "-",
+        (image_sha256 or "")[:16],
+        "omr" if omr else "simples",
+        nome,
+        codigo,
+        len(respostas_marcadas),
+        sum(1 for r in todas_respostas if r.get("estado") == "nao_marcada"),
+        sum(1 for r in todas_respostas if r.get("estado") == "multipla_marcacao"),
+        meta_prep,
+    )
+    if incluir_detalhes and det_respostas.get("resumo"):
+        logger.info("OMR debug resumo: %s", det_respostas["resumo"])
+    for r in respostas_marcadas[:5]:
+        logger.debug(
+            "OMR linha marcada Q%s %s pct=%s",
+            r.get("pergunta"),
+            r.get("resposta"),
+            r.get("percentagem_preenchimento"),
+        )
+    if incluir_detalhes and det_respostas.get("disciplina_1"):
+        for linha in det_respostas["disciplina_1"][:3]:
+            logger.debug("OMR D1 amostra: %s", linha)
+
     out: Dict[str, Any] = {
         "nome": nome,
         "codigo": codigo,
-        "respostas": respostas,
+        "respostas": todas_respostas,
+        "respostas_marcadas": respostas_marcadas,
         "tipo_folha": "omr" if omr else "simples",
-        "total_respostas": len(respostas),
+        "total_respostas": len(respostas_marcadas),
+        "total_questoes": len(todas_respostas),
         "preparacao_imagem": meta_prep,
+        "imagem_sha256": image_sha256 or "",
     }
+    if request_id:
+        out["request_id"] = request_id
     if incluir_detalhes:
         out["diagnostico_omr"] = det_respostas
 
@@ -1729,7 +1913,7 @@ def processar_folha_avaliacao(
             "Não foi possível detectar o contorno da folha; foi usado apenas redimensionamento. "
             "Publique a foto com as quatro bordas visíveis para melhor alinhamento."
         )
-    if omr and len(respostas) == 0:
+    if omr and len(respostas_marcadas) == 0:
         avisos.append(
             "Nenhuma marcação detectada na grelha OMR. Verifique iluminação, nítidez e parâmetros "
             "n_questoes_disciplina_1/2."
@@ -1737,14 +1921,6 @@ def processar_folha_avaliacao(
     if avisos:
         out["avisos"] = avisos
 
-    logger.info(
-        "OMR resumo | tipo=%s nome='%s' codigo='%s' respostas=%s prep=%s",
-        out.get("tipo_folha"),
-        out.get("nome", ""),
-        out.get("codigo", ""),
-        out.get("total_respostas", 0),
-        out.get("preparacao_imagem", {}),
-    )
     return out
 
 
@@ -2008,6 +2184,7 @@ async def ocr_folha(
         n_disciplina_2=n2,
         incluir_detalhes=diagnostico_detalhado,
         image_sha256=image_sha256,
+        request_id=request_id,
     )
 
     # 6. Montar JSON final
@@ -2019,7 +2196,9 @@ async def ocr_folha(
         "nome": dados["nome"],
         "codigo": dados["codigo"],
         "respostas": dados["respostas"],
-        "total_respostas": dados.get("total_respostas", len(dados["respostas"])),
+        "respostas_marcadas": dados.get("respostas_marcadas", []),
+        "total_respostas": dados.get("total_respostas", 0),
+        "total_questoes": dados.get("total_questoes", len(dados["respostas"])),
         "preparacao_imagem": dados.get("preparacao_imagem", {}),
         "parametros_pedido": {
             "n_questoes_disciplina_1": n1,

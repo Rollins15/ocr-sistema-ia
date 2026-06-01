@@ -217,7 +217,7 @@ function ResultadoTexto({ dados }) {
   );
 }
 
-// ─── Resultado: EXAME INTEGRADO (disciplinas marcadas) ───────────────────────
+// ─── Resultado: EXAME INTEGRADO (disciplinas) ───────────────────────────────
 function ResultadoDisciplinas({ dados }) {
   const lista = dados.disciplinas || [];
 
@@ -225,9 +225,19 @@ function ResultadoDisciplinas({ dados }) {
     <div className="resultado-box resultado-folha">
       <h3>EXAME INTEGRADO</h3>
       <span className="badge tipo-folha">Disciplinas marcadas</span>
+      <div className="folha-campos">
+        <p>
+          <strong>Total:</strong> {lista.length} disciplina{lista.length !== 1 ? "s" : ""}
+        </p>
+        {dados.exame_integrado_detectado === false && (
+          <p className="aviso-secao">
+            Secção não confirmada por OCR; verifique a foto da folha.
+          </p>
+        )}
+      </div>
       <h4>Disciplinas seleccionadas</h4>
       {lista.length > 0 ? (
-        <ul className="lista-respostas lista-disciplinas">
+        <ul className="lista-respostas">
           {lista.map((nome, i) => (
             <li key={`${nome}-${i}`}>
               <strong>{nome}</strong>
@@ -235,21 +245,14 @@ function ResultadoDisciplinas({ dados }) {
           ))}
         </ul>
       ) : (
-        <p className="sem-resultado">
-          Nenhuma disciplina marcada detectada na secção EXAME INTEGRADO.
-        </p>
+        <p className="sem-resultado">Nenhuma disciplina marcada detectada.</p>
       )}
       {dados.avisos?.length > 0 && (
-        <div className="avisos-folha">
+        <ul className="lista-avisos">
           {dados.avisos.map((a, i) => (
-            <p key={i} className="aviso-linha">{a}</p>
+            <li key={i}>{a}</li>
           ))}
-        </div>
-      )}
-      {dados.ficheiro_json && (
-        <p className="docx-info">
-          JSON guardado: <code>{dados.ficheiro_json}</code>
-        </p>
+        </ul>
       )}
     </div>
   );
@@ -328,7 +331,7 @@ export default function App() {
             className={`tab ${modo === "folha" ? "activo" : ""}`}
             onClick={() => { setModo("folha"); setResultado(null); }}
           >
-            EXAME INTEGRADO
+            Folha de Avaliação (EXAME INTEGRADO)
           </button>
         </div>
 
@@ -346,7 +349,7 @@ export default function App() {
               {modo === "quiz" &&
                 "Carrega ou fotografa uma imagem com perguntas numeradas e opções A, B, C, D."}
               {modo === "folha" &&
-                "Detecta apenas as disciplinas marcadas (quadrados à direita de cada linha). Não lê nome, código nem respostas A–E."}
+                "Detecta apenas as disciplinas marcadas (Disciplina 1 e 2). Não lê nome, código nem respostas A–E."}
             </p>
 
             <SelecionarImagem
