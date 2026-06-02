@@ -1,0 +1,93 @@
+{
+  "versao": "folha_azul_1",
+  "fonte_pdf": "FOLHA AZUL1.pdf",
+  "tamanho_canonica": [
+    1191,
+    1684
+  ],
+  "notas": "Gabarito calibrado em referencia_canonica.png. Fotos P&B: CLAHE + perspectiva. Regenerar: python folha_azul/calibrar_gabarito.py",
+  "roi": {
+    "codigo_bolhas_10x10": [
+      0.025,
+      0.53,
+      0.3,
+      0.16
+    ],
+    "codigo_caixas_manuscritas": [
+      0.025,
+      0.495,
+      0.3,
+      0.03
+    ],
+    "exame_integrado_disciplina_1": [
+      0.045,
+      0.75,
+      0.1728,
+      0.15
+    ],
+    "exame_integrado_disciplina_2": [
+      0.2322,
+      0.75,
+      0.1728,
+      0.15
+    ],
+    "respostas_disciplina_1": [
+      0.4,
+      0.28,
+      0.26,
+      0.64
+    ],
+    "respostas_disciplina_2": [
+      0.68,
+      0.28,
+      0.26,
+      0.64
+    ]
+  },
+  "exame_integrado": {
+    "disciplina_1": [
+      "Matemática III",
+      "Matemática II",
+      "Matemática III",
+      "Português I",
+      "Biologia II",
+      "Matemática I",
+      "Português III",
+      "Biologia I",
+      "Matemática II"
+    ],
+    "disciplina_2": [
+      "Geografia II",
+      "Desenho",
+      "Química II",
+      "História",
+      "Física II",
+      "Física I",
+      "Geografia I",
+      "Química I",
+      "Português II"
+    ],
+    "n_opcoes_por_coluna": 9
+  },
+  "codigo": {
+    "colunas": 10,
+    "digitos_por_coluna": 10
+  },
+  "respostas": {
+    "n_disciplina_1": 40,
+    "n_disciplina_2": 40,
+    "opcoes": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E"
+    ]
+  },
+  "fases": [
+    "codigo",
+    "disciplinas",
+    "opcoes",
+    "completo"
+  ]
+}

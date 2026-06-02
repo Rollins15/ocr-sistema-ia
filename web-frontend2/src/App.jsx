@@ -243,6 +243,8 @@ function ResultadoFolha({ dados }) {
   );
   const perguntas = perguntasEsperadasFolha(dados);
   const marcadas = dados.respostas_marcadas || lista.filter((r) => r.estado === "marcada");
+  const d1 = dados?.exame_integrado?.disciplina_1;
+  const d2 = dados?.exame_integrado?.disciplina_2;
 
   return (
     <div className="resultado-box resultado-folha">
@@ -269,6 +271,20 @@ function ResultadoFolha({ dados }) {
           <strong>Marcações únicas:</strong> {marcadas.length} / {dados.total_questoes || lista.length || 80}
         </p>
       </div>
+
+      {(d1 || d2) && (
+        <div className="folha-campos">
+          <p>
+            <strong>Disciplina 1:</strong>{" "}
+            {d1?.disciplina_escolhida || <em className="vazio">Não marcada</em>}
+          </p>
+          <p>
+            <strong>Disciplina 2:</strong>{" "}
+            {d2?.disciplina_escolhida || <em className="vazio">Não marcada</em>}
+          </p>
+        </div>
+      )}
+
       <h4>Todas as questões (1–80)</h4>
       {perguntas.length > 0 ? (
         <ul className="lista-respostas">

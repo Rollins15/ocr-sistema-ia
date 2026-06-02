@@ -11,6 +11,7 @@ backend/resultados/*.json
 backend/test_*.png
 backend/cal*.py
 backend/tmp_*.png
+backend/folha_azul/debug_*/
 
 # Node
 node_modules/

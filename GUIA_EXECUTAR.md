@@ -45,7 +45,28 @@ O frontend abre em:
 http://localhost:3000
 ```
 
-## 3. Comunicação frontend/backend
+## 3. Folha OMR — leitura por fases (recomendado pelo docente)
+
+No Postman ou no frontend, envie `POST /ocr/folha` com `multipart/form-data`:
+
+| Ordem | Campo `fase` | O que lê |
+|-------|----------------|----------|
+| 1 | `codigo` | Código do candidato/estudante (grelha 10×10) |
+| 2 | `disciplinas` | Código + exame integrado Disc. 1 e 2 (nº perguntas, alinhamento) |
+| 3 | `opcoes` | Código + disciplinas + opção A–E por pergunta |
+| — | `completo` | Tudo (inclui nome; valor por defeito) |
+
+Exemplo (só código):
+
+```text
+POST http://localhost:8000/ocr/folha
+file=<imagem>
+fase=codigo
+```
+
+A resposta inclui `proxima_fase` (ex.: depois de `codigo` vem `disciplinas`).
+
+## 4. Comunicação frontend/backend
 
 O frontend está configurado para chamar o backend em:
 
@@ -73,7 +94,7 @@ REACT_APP_API_URL=http://localhost:8000
 
 Depois reinicie o `npm start`.
 
-## 4. Requisitos importantes
+## 5. Requisitos importantes
 
 O Tesseract OCR precisa estar instalado no Windows. Caminho comum:
 
@@ -83,7 +104,7 @@ C:\Program Files\Tesseract-OCR\tesseract.exe
 
 Se o OCR não funcionar, confirme se o Tesseract está instalado e se o idioma português está disponível.
 
-## 5. App mobile (Expo) — paridade com a web
+## 6. App mobile (Expo) — paridade com a web
 
 A pasta `mobile-app` tem os **3 modos**: Texto Geral, Quiz e Folha de Avaliação (igual ao `web-frontend2`).
 

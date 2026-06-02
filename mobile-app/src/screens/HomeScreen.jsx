@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as Clipboard from "expo-clipboard";
-import { BASE_URL } from "../config/api";
+import { BASE_URL, backendUrlProvavelmenteErrado } from "../config/api";
 import {
   extrairTexto,
   extrairQuiz,
@@ -171,6 +171,9 @@ function ResultadoFolha({ dados }) {
   const marcadas =
     dados.respostas_marcadas ||
     (dados.respostas || []).filter((r) => r.estado === "marcada");
+  const d1 = dados?.exame_integrado?.disciplina_1;
+  const d2 = dados?.exame_integrado?.disciplina_2;
+  const temRespostas = (dados.respostas || []).length > 0;
 
   return (
     <View style={estilos.resultadoBox}>
@@ -198,42 +201,62 @@ function ResultadoFolha({ dados }) {
         <Text style={estilos.campoLabel}>Marcações: </Text>
         {marcadas.length} / {dados.total_questoes || 80}
       </Text>
+      {(d1 || d2) && (
+        <>
+          <Text style={estilos.campoFolha}>
+            <Text style={estilos.campoLabel}>Disciplina 1: </Text>
+            {d1?.disciplina_escolhida || "Não marcada"}
+          </Text>
+          <Text style={estilos.campoFolha}>
+            <Text style={estilos.campoLabel}>Disciplina 2: </Text>
+            {d2?.disciplina_escolhida || "Não marcada"}
+          </Text>
+        </>
+      )}
       {dados.imagem_sha256 && (
         <Text style={estilos.docxInfo}>
           Hash: {dados.imagem_sha256.slice(0, 16)}…
         </Text>
       )}
 
-      <Text style={[estilos.resultadoTitulo, { marginTop: 12 }]}>
-        Questões (1–80)
-      </Text>
-      <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
-        {perguntas.map((p) => {
-          const r = mapa.get(Number(p.pergunta));
-          const texto = textoRespostaFolha(r);
-          const naoMarcada = !r || r.estado === "nao_marcada";
-          const multipla = r?.estado === "multipla_marcacao";
-          return (
-            <View
-              key={p.pergunta}
-              style={[
-                estilos.respostaItem,
-                naoMarcada && estilos.respostaNaoMarcada,
-                multipla && estilos.respostaMultipla,
-              ]}
-            >
-              <Text style={estilos.respostaTexto}>
-                Pergunta {p.pergunta}
-                {(r?.disciplina || p.disciplina)
-                  ? ` (D${r?.disciplina || p.disciplina})`
-                  : ""}
-                :{" "}
-                <Text style={estilos.respostaLetra}>{texto}</Text>
-              </Text>
-            </View>
-          );
-        })}
-      </ScrollView>
+      {temRespostas ? (
+        <>
+          <Text style={[estilos.resultadoTitulo, { marginTop: 12 }]}>
+            Questões (1–80)
+          </Text>
+          <ScrollView nestedScrollEnabled style={{ maxHeight: 320 }}>
+            {perguntas.map((p) => {
+              const r = mapa.get(Number(p.pergunta));
+              const texto = textoRespostaFolha(r);
+              const naoMarcada = !r || r.estado === "nao_marcada";
+              const multipla = r?.estado === "multipla_marcacao";
+              return (
+                <View
+                  key={p.pergunta}
+                  style={[
+                    estilos.respostaItem,
+                    naoMarcada && estilos.respostaNaoMarcada,
+                    multipla && estilos.respostaMultipla,
+                  ]}
+                >
+                  <Text style={estilos.respostaTexto}>
+                    Pergunta {p.pergunta}
+                    {(r?.disciplina || p.disciplina)
+                      ? ` (D${r?.disciplina || p.disciplina})`
+                      : ""}
+                    :{" "}
+                    <Text style={estilos.respostaLetra}>{texto}</Text>
+                  </Text>
+                </View>
+              );
+            })}
+          </ScrollView>
+        </>
+      ) : (
+        <Text style={estilos.semRespostas}>
+          Sem respostas A–E nesta fase. Use o resultado de disciplinas acima.
+        </Text>
+      )}
 
       {dados.avisos?.length > 0 && (
         <View style={estilos.avisoBox}>
@@ -341,8 +364,14 @@ export default function HomeScreen() {
       {backendOk === false && (
         <View style={estilos.erroBox}>
           <Text style={estilos.erroTexto}>
-            Backend offline em {BASE_URL}. Inicie: uvicorn main:app --host
-            0.0.0.0 --port 8000
+            Backend offline em {BASE_URL}.
+            {backendUrlProvavelmenteErrado()
+              ? " No telemóvel, localhost é o próprio telefone — não o PC."
+              : ""}{" "}
+            PC: uvicorn main:app --host 0.0.0.0 --port 8000. Hotspot: no PC
+            ipconfig → IPv4; em mobile-app/.env use
+            EXPO_PUBLIC_API_URL=http://IP_DO_PC:8000 e reinicie com npx expo
+            start -c
           </Text>
         </View>
       )}

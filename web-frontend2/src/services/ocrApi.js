@@ -50,7 +50,8 @@ export async function extrairQuiz(imagemFile) {
 export async function extrairFolha(imagemFile) {
   const formData = new FormData();
   formData.append("file", imagemFile);
-  formData.append("diagnostico_detalhado", "true");
+  // Foco atual: código + exame integrado (disciplinas).
+  formData.append("fase", "disciplinas");
 
   const resposta = await fetch(`${BASE_URL}/ocr/folha`, {
     method: "POST",

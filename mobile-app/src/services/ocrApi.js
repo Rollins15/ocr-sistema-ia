@@ -41,10 +41,10 @@ export async function extrairQuiz(imageUri) {
   return pedidoPost("/ocr/quiz", formData);
 }
 
-export async function extrairFolha(imageUri) {
+export async function extrairFolha(imageUri, fase = "disciplinas") {
   const formData = new FormData();
   formData.append("file", ficheiroImagem(imageUri, "folha.jpg"));
-  formData.append("diagnostico_detalhado", "true");
+  formData.append("fase", fase);
   return pedidoPost("/ocr/folha", formData);
 }
 
