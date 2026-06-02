@@ -44,9 +44,9 @@ export async function extrairQuiz(imagemFile) {
 }
 
 /**
- * EXAME INTEGRADO: disciplinas marcadas (sem nome, código nem respostas A–E).
+ * EXAME INTEGRADO: apenas disciplinas marcadas (sem nome, código nem respostas).
  */
-export async function extrairDisciplinas(imagemFile, limiarPreenchimento = 18) {
+export async function extrairDisciplinas(imagemFile, limiarPreenchimento = 50) {
   const formData = new FormData();
   formData.append("file", imagemFile);
   formData.append("limiar_preenchimento", String(limiarPreenchimento));
@@ -69,8 +69,7 @@ export async function extrairDisciplinas(imagemFile, limiarPreenchimento = 18) {
 }
 
 /**
- * Envia imagem para o endpoint /ocr/folha
- * Retorna nome, código e respostas marcadas
+ * @deprecated Fase actual: usar extrairDisciplinas() para EXAME INTEGRADO.
  */
 export async function extrairFolha(imagemFile) {
   const formData = new FormData();

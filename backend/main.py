@@ -228,17 +228,17 @@ ROI_DISC2 = (0.665, 0.305, 0.24, 0.62)      # coluna "Disciplina - 2" (grelha re
 TAMANHO_OMR = (1000, 1414)                  # (largura, altura) canónica
 
 # EXAME INTEGRADO — selecção de disciplinas (folha oficial UCM, ver FOLHA_AZUL)
-# Scan/PDF em retrato: tabela abaixo do código do candidato (~y 0,70–0,89)
-ROI_EXAME_SCAN_INTEGRADO = (0.02, 0.68, 0.34, 0.22)
-ROI_EXAME_SCAN_DISCIPLINA_1 = (0.02, 0.695, 0.165, 0.195)
-ROI_EXAME_SCAN_DISCIPLINA_2 = (0.17, 0.695, 0.165, 0.195)
+# Scan/PDF em retrato: tabela no canto inferior esquerdo (~y 0.74–0.88)
+ROI_EXAME_SCAN_INTEGRADO = (0.02, 0.725, 0.36, 0.19)
+ROI_EXAME_SCAN_DISCIPLINA_1 = (0.03, 0.738, 0.17, 0.145)
+ROI_EXAME_SCAN_DISCIPLINA_2 = (0.205, 0.738, 0.17, 0.145)
 OMR_EXAME_CHK_X0_SCAN = 0.78
 # Foto em paisagem (rotação 90°): secção sobe na imagem normalizada
 ROI_EXAME_FOTO_INTEGRADO = (0.02, 0.50, 0.40, 0.42)
 ROI_EXAME_FOTO_DISCIPLINA_1 = (0.03, 0.52, 0.19, 0.38)
 ROI_EXAME_FOTO_DISCIPLINA_2 = (0.22, 0.52, 0.19, 0.38)
 OMR_EXAME_CHK_X0_FOTO = 0.55
-LIMIAR_DISCIPLINA_PADRAO = 18.0
+LIMIAR_DISCIPLINA_PADRAO = 50.0
 OMR_EXAME_CHK_RW_REL = 0.38
 DISCIPLINAS_DISCIPLINA_1 = [
     "Matemática III",
@@ -766,6 +766,93 @@ def _config_exame_integrado(
     )
 
 
+def _faixa_exame_integrado_pixels(cinza: np.ndarray) -> Tuple[int, int, int, int]:
+    """Recorte absoluto (y0, y1, x0, x1) da tabela EXAME INTEGRADO."""
+    h, w = cinza.shape[:2]
+    return int(h * 0.725), int(h * 0.905), int(w * 0.02), int(w * 0.38)
+
+
+def _contornos_checkboxes_exame(patch: np.ndarray) -> List[Dict[str, Any]]:
+    """Detecta quadrados de disciplina via threshold + findContours + boundingRect."""
+    ph, pw = patch.shape[:2]
+    if ph < 10 or pw < 10:
+        return []
+
+    blur = cv2.GaussianBlur(patch, (3, 3), 0)
+    _, binaria = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    caixas: List[Dict[str, Any]] = []
+    contornos, _ = cv2.findContours(binaria, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    for cnt in contornos:
+        area = cv2.contourArea(cnt)
+        if area < 70 or area > 3500:
+            continue
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        if not (18 <= bw <= 44 and 8 <= bh <= 22):
+            continue
+        cx = x + bw / 2.0
+        if cx < pw * 0.32:
+            continue
+        ratio = bw / float(bh)
+        if ratio < 0.9 or ratio > 3.2:
+            continue
+        box = {"x": x, "y": y, "w": bw, "h": bh, "cx": cx, "cy": y + bh / 2.0}
+        box["fill"] = percentagem_preenchimento(patch, box)
+        caixas.append(box)
+
+    deduplicadas: List[Dict[str, Any]] = []
+    for caixa in sorted(caixas, key=lambda b: -b["fill"]):
+        for existente in deduplicadas:
+            if abs(caixa["cx"] - existente["cx"]) < 12 and abs(caixa["cy"] - existente["cy"]) < 10:
+                break
+        else:
+            deduplicadas.append(caixa)
+    return deduplicadas
+
+
+def _uma_caixa_por_linha(
+    caixas: List[Dict[str, Any]], n_linhas: int, altura_patch: int
+) -> List[Optional[Dict[str, Any]]]:
+    """Reduz N contornos a uma caixa por linha (0..n_linhas-1)."""
+    por_linha = _mapear_quadrados_a_linhas(caixas, n_linhas, altura_patch)
+    resultado: List[Optional[Dict[str, Any]]] = []
+    for grupo in por_linha:
+        if not grupo:
+            resultado.append(None)
+        else:
+            resultado.append(max(grupo, key=lambda b: b.get("fill", 0.0)))
+    return resultado
+
+
+def _detectar_disciplinas_exame_contornos(
+    cinza: np.ndarray,
+    nomes_col1: List[str],
+    nomes_col2: List[str],
+    limiar: float,
+) -> Optional[List[str]]:
+    """Detecção principal: contornos na faixa inferior esquerda da folha."""
+    y0, y1, x0, x1 = _faixa_exame_integrado_pixels(cinza)
+    patch = cinza[y0:y1, x0:x1]
+    ph, pw = patch.shape[:2]
+    caixas = _contornos_checkboxes_exame(patch)
+    if len(caixas) < 4:
+        return None
+
+    meio = pw * 0.62
+    col1 = [c for c in caixas if c["cx"] < meio]
+    col2 = [c for c in caixas if c["cx"] >= meio]
+    marcadas: List[str] = []
+
+    for nomes, col_caixas in ((nomes_col1, col1), (nomes_col2, col2)):
+        if not col_caixas:
+            continue
+        linhas = _uma_caixa_por_linha(col_caixas, len(nomes), ph)
+        for i, caixa in enumerate(linhas):
+            if caixa and caixa.get("fill", 0.0) >= limiar:
+                marcadas.append(nomes[i])
+
+    return marcadas if marcadas else None
+
+
 def _area_exame_integrado_presente(
     imagem_bgr: np.ndarray,
     roi_integrado: Tuple[float, float, float, float],
@@ -902,23 +989,30 @@ def detectar_disciplinas(
 
     roi_d1, roi_d2, chk_x0, roi_integrado, modo_roi = _config_exame_integrado(prep_meta)
     secao_ok = _area_exame_integrado_presente(img_prep, roi_integrado)
-    # Folha digital: contornos das caixas vazias confundem com marcação; usar só grelha.
-    apenas_grelha = modo_roi == "scan"
-    disciplinas: List[str] = []
-    disciplinas.extend(
-        _detectar_disciplinas_coluna_exame(
-            cinza, roi_d1, DISCIPLINAS_DISCIPLINA_1, limiar, chk_x0, apenas_grelha
-        )
+
+    disciplinas = _detectar_disciplinas_exame_contornos(
+        cinza, DISCIPLINAS_DISCIPLINA_1, DISCIPLINAS_DISCIPLINA_2, limiar
     )
-    disciplinas.extend(
-        _detectar_disciplinas_coluna_exame(
-            cinza, roi_d2, DISCIPLINAS_DISCIPLINA_2, limiar, chk_x0, apenas_grelha
+    if disciplinas is None:
+        disciplinas = []
+        disciplinas.extend(
+            _detectar_disciplinas_coluna_exame(
+                cinza, roi_d1, DISCIPLINAS_DISCIPLINA_1, limiar, chk_x0, False
+            )
         )
-    )
+        disciplinas.extend(
+            _detectar_disciplinas_coluna_exame(
+                cinza, roi_d2, DISCIPLINAS_DISCIPLINA_2, limiar, chk_x0, False
+            )
+        )
 
     resultado: Dict[str, Any] = {
         "disciplinas": disciplinas,
         "modo_roi_exame": modo_roi,
+        "rois_utilizadas": {
+            "disciplina_1": [round(v, 4) for v in roi_d1],
+            "disciplina_2": [round(v, 4) for v in roi_d2],
+        },
     }
     resultado["preparacao_imagem"] = prep_meta
     resultado["exame_integrado_detectado"] = secao_ok
