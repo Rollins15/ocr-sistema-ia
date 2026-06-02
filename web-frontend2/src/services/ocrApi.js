@@ -44,6 +44,31 @@ export async function extrairQuiz(imagemFile) {
 }
 
 /**
+ * EXAME INTEGRADO: disciplinas marcadas (sem nome, código nem respostas A–E).
+ */
+export async function extrairDisciplinas(imagemFile, limiarPreenchimento = 18) {
+  const formData = new FormData();
+  formData.append("file", imagemFile);
+  formData.append("limiar_preenchimento", String(limiarPreenchimento));
+
+  const resposta = await fetch(`${BASE_URL}/ocr/disciplinas`, {
+    method: "POST",
+    body: formData,
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    },
+  });
+
+  if (!resposta.ok) {
+    throw new Error(`Erro do servidor: ${resposta.status}`);
+  }
+
+  return resposta.json();
+}
+
+/**
  * Envia imagem para o endpoint /ocr/folha
  * Retorna nome, código e respostas marcadas
  */
